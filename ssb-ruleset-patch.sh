@@ -1,7 +1,7 @@
 #!/bin/bash
 # ssb-ruleset-patch — добавляет в клиентский шаблон IN-ноды (template.json) наборы
-# правил из A-Zuro/sb-rule-sets для НОВЫХ конфигов (старые конфиги не трогаются —
-# правила вшиваются в конфиг при генерации):
+# правил из A-Zuro/sb-rule-sets для НОВЫХ конфигов (старые конфиги по умолчанию не
+# трогаются — правила вшиваются в конфиг при генерации):
 #   bypass-apps   — 530 приложений (банки/Госуслуги/маркетплейсы) -> direct
 #                   (антифрод приложений не видит «иностранную IP»)
 #   encrypted-dns — DoH/DoT-провайдеры -> reject (закрыть обход DNS-политики)
@@ -9,10 +9,15 @@
 #
 # Запускать НА IN-ноде от root. Для раскатки на другую ноду — просто повторить там.
 # Команды:
-#   ssb-ruleset-patch.sh apply    — скачать наборы + прописать в template.json
+#   ssb-ruleset-patch.sh apply [--existing] — скачать наборы + прописать в template.json;
+#                        --existing дополнительно внедряет правила в УЖЕ созданные
+#                        конфиги (*-CLIENT.json в webdir). Ссылки и пароли не меняются,
+#                        меняется только маршрутизация; клиенты подхватят изменения при
+#                        обновлении подписки/повторном импорте конфига.
 #   ssb-ruleset-patch.sh status   — что применено
 #   ssb-ruleset-patch.sh remove   — убрать наборы из шаблона (файлы удалить)
 #
+# Порядок для новой ноды: установка SSB -> ssb-ruleset-patch apply -> создание заказов.
 # Источник: https://github.com/A-Zuro/sb-rule-sets (файлы валидируются после скачивания).
 # Правила добавляются рядом с существующим torrent-clients (порядок важен: специфичные
 # правила идут до широких .ru-правил).
@@ -86,7 +91,67 @@ print(f"template.json: {action} OK")
 PYEOF
 }
 
+# --- внедрение правил в УЖЕ созданные конфиги (веб-файлы *-CLIENT.json) ---
+cmd_existing() {
+    local WEBDIR
+    WEBDIR=$(dirname "$TPL")
+    local bak="$BAKDIR/existing-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$bak"
+    cp -a "$WEBDIR"/*-CLIENT.json "$bak"/ 2>/dev/null || true
+    echo "бэкап существующих конфигов: $bak"
+    python3 - "$WEBDIR" <<'PYEOF'
+import json, os, re, sys
+webdir = sys.argv[1]
+NEW = [
+    ("bypass-apps",   {"rule_set": ["bypass-apps"], "outbound": "direct"},
+                      {"rule_set": ["bypass-apps"], "server": "dns-local"}),
+    ("encrypted-dns", {"rule_set": ["encrypted-dns"], "action": "reject", "method": "drop"},
+                      None),
+    ("android-fcm",   {"rule_set": ["android-fcm"], "outbound": "direct"},
+                      {"rule_set": ["android-fcm"], "server": "dns-local"}),
+]
+patched = skipped = 0
+for fn in sorted(os.listdir(webdir)):
+    if not fn.endswith("-CLIENT.json"):
+        continue
+    path = os.path.join(webdir, fn)
+    try:
+        c = json.load(open(path))
+    except Exception:
+        continue
+    rs = c.setdefault("route", {}).setdefault("rule_set", [])
+    if "bypass-apps" in {x.get("tag") for x in rs}:
+        skipped += 1
+        continue
+    base = None
+    for x in rs:
+        m = re.match(r"^(.*/)[^/]+\.json$", x.get("url", ""))
+        if m:
+            base = m.group(1)
+            break
+    if not base:
+        print(f"  {fn}: пропущен (нет url наборов)")
+        continue
+    for tag, _, _ in NEW:
+        rs.append({"type": "remote", "tag": tag, "format": "source", "url": base + tag + ".json"})
+    is_tc = lambda r: (r.get("rule_set") or [None])[0] == "torrent-clients"
+    rules = c["route"]["rules"]
+    idx = next((i for i, r in enumerate(rules) if is_tc(r)), 0)
+    c["route"]["rules"] = rules[:idx+1] + [r for _, r, _ in NEW if r] + rules[idx+1:]
+    dns_rules = c.setdefault("dns", {}).setdefault("rules", [])
+    dns_new = [d for _, _, d in NEW if d and not any(
+        (x.get("rule_set") or [None])[0] == (d.get("rule_set") or [None])[0] for x in dns_rules)]
+    didx = next((i for i, r in enumerate(dns_rules) if is_tc(r)), len(dns_rules) - 1)
+    c["dns"]["rules"] = dns_rules[:didx+1] + dns_new + dns_rules[didx+1:]
+    json.dump(c, open(path, "w"), indent=2, ensure_ascii=False)
+    patched += 1
+print(f"  существующих конфигов обновлено: {patched}, пропущено (уже с правилами): {skipped}")
+PYEOF
+}
+
 cmd_apply() {
+    local existing=0
+    [[ "${1:-}" == "--existing" ]] && existing=1
     mkdir -p "$BAKDIR"
     local bak="$BAKDIR/template.json.bak-$(date +%Y%m%d-%H%M%S)"
     cp -a "$TPL" "$bak"
@@ -101,11 +166,12 @@ cmd_apply() {
         fi
         mv "$RDIR/$s.json.tmp" "$RDIR/$s.json"
         chmod 644 "$RDIR/$s.json"
-        echo "  $s: скачан ($(grep -c 'package_name\|domain\|port' "$RDIR/$s.json" 2>/dev/null || echo '?') строк-записей)"
+        echo "  $s: скачан и проверен"
     done
     [[ $ok == 1 ]] || { echo "часть наборов не скачалась — шаблон НЕ тронут"; rm -f "$RDIR"/*.tmp; exit 1; }
     patch_tpl apply
     echo "Готово. Правила действуют для НОВЫХ заказов (ssb-add-order)."
+    [[ $existing == 1 ]] && cmd_existing
     cmd_status
 }
 
@@ -133,8 +199,8 @@ PYEOF
 }
 
 case "${1:-}" in
-    apply)  cmd_apply ;;
+    apply)  shift; cmd_apply "${1:-}" ;;
     remove) cmd_remove ;;
     status) cmd_status ;;
-    *) echo "Использование: ssb-ruleset-patch.sh {apply|remove|status}"; exit 1 ;;
+    *) echo "Использование: ssb-ruleset-patch.sh {apply [--existing]|remove|status}"; exit 1 ;;
 esac
