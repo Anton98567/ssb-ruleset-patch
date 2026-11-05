@@ -14,8 +14,14 @@
 ## Установка (одна команда, на IN-ноде)
 
 ```bash
+# только новые конфиги (правила вшиваются при генерации):
 curl -fsSL https://raw.githubusercontent.com/Anton98567/ssb-ruleset-patch/main/install.sh | bash
+
+# + внедрить правила в УЖЕ созданные конфиги:
+curl -fsSL https://raw.githubusercontent.com/Anton98567/ssb-ruleset-patch/main/install.sh | bash -s -- --existing
 ```
+
+Обе команды идемпотентны — повторный запуск ничего не дублирует.
 
 ## Управление
 

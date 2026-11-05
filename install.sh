@@ -1,11 +1,16 @@
 #!/bin/bash
 # Установка ssb-ruleset-patch на IN-ноду SSB одной командой:
 #
+#   # только новые конфиги (правила вшиваются при генерации):
 #   curl -fsSL https://raw.githubusercontent.com/Anton98567/ssb-ruleset-patch/main/install.sh | bash
 #
-# Что делает: кладёт утилиту /usr/local/bin/ssb-ruleset-patch и сразу применяет
-# наборы правил (bypass-apps, encrypted-dns, android-fcm) к template.json ноды —
-# новые конфиги заказов будут содержать правила, старые не меняются.
+#   # + внедрить правила в УЖЕ созданные конфиги:
+#   curl -fsSL https://raw.githubusercontent.com/Anton98567/ssb-ruleset-patch/main/install.sh | bash -s -- --existing
+#
+# Что делает: кладёт утилиту /usr/local/bin/ssb-ruleset-patch и применяет наборы
+# правил (bypass-apps, encrypted-dns, android-fcm) к template.json ноды;
+# флаг --existing дополнительно обновляет уже выданные конфиги (ссылки/пароли
+# не меняются; клиенты подхватят при обновлении подписки/импорте).
 set -euo pipefail
 
 REPO="https://raw.githubusercontent.com/Anton98567/ssb-ruleset-patch/main"
@@ -19,4 +24,4 @@ chmod 755 "$BIN"
 bash -n "$BIN"
 
 echo "Применяю наборы правил..."
-exec "$BIN" apply
+exec "$BIN" apply "$@"

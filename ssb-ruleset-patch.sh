@@ -70,8 +70,11 @@ if action == "apply":
                 "url": f"https://DOMAIN/RULESETPATH/{tag}.json",
             })
     is_tc = lambda r: (r.get("rule_set") or [None])[0] == "torrent-clients"
-    c["route"]["rules"] = insert_after(c["route"]["rules"], is_tc,
-                                       [r for _, r, _ in NEW if r])
+    # дубликаты НЕ создаем: правило добавляется, только если тега ещё нет
+    rules_now = c["route"]["rules"]
+    have_rule = lambda t: any((x.get("rule_set") or [None])[0] == t for x in rules_now)
+    route_new = [r for _, r, _ in NEW if r and not have_rule((r.get("rule_set") or [None])[0])]
+    c["route"]["rules"] = insert_after(rules_now, is_tc, route_new)
     dns_rules = c.setdefault("dns", {}).setdefault("rules", [])
     dns_new = [d for _, _, d in NEW if d and not any(
         (x.get("rule_set") or [None])[0] == (d.get("rule_set") or [None])[0] for x in dns_rules)]
